@@ -1,0 +1,17 @@
+jupyter
+python-dotenv
+pandas
+numpy
+pyspark
+pyarrow
+scikit-learn
+cmdstanpy
+tabulate
+statsmodels
+fancyimpute
+openpyxl
+rpy2==3.5.17
+plotnine
+forestplot
+
+## pystan instruction: https://mc-stan.org/cmdstanpy/installation.html
