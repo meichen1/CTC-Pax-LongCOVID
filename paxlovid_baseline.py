@@ -1,7 +1,7 @@
 """
 Baseline Demographics Analysis for Paxlovid Study
 Based on CanTreatCOVID RCC data
-for Paxlovid vs Usual Care comparison
+For Paxlovid vs Usual Care comparison
 """
 
 import pandas as pd

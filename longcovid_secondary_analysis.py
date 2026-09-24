@@ -6,9 +6,8 @@ Step 2: Comprehensive analysis including:
 3. WHO long COVID questions (Day 90 and Week 36)
 4. Total symptom burden scores (Day 90 and Week 36)
 5. Demographic covariates analysis
-6. Linear regression associations
+6. Logistic and linear regression associations
 
-Based on CanTreatCOVID RCC data, paxlovid arm
 """
 
 import pandas as pd
