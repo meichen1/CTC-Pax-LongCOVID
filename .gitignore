@@ -1,8 +1,0 @@
-archiv_longcovid/
-longcovid_plots.py
-plan_longcovid.md
-test*
-Stan Code*LongCovid
-__pycache__/
-.ipynb_checkpoints/
-*.pyc
