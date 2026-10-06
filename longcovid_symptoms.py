@@ -110,7 +110,7 @@ def get_longcovid_symptom_variables():
         'fup_ent_sound'
     ]
     
-    # Stomach/GI symptoms (9 variables)
+    # Stomach/GI symptoms (8 variables)
     stomach_vars = [
         'fup_stomac_pain',
         'fup_stomac_bloating',
