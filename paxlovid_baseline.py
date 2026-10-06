@@ -43,7 +43,13 @@ def load_and_prepare_data():
         .tolist()
     )
     print(f"Paxlovid participant IDs in antioxidant dataset: {pax_ids_in_antiox}")
-    
+        
+    expected_pax_ids = ['3-1001', '3-1002', '3-1003', '3-1004']
+    if pax_ids_in_antiox != expected_pax_ids:
+        raise ValueError(
+            f"Expected Paxlovid IDs {expected_pax_ids}, got {pax_ids_in_antiox}"
+        )
+        
     # Filter antioxidant data to only these 4 participants
     df_antiox = df_antiox[df_antiox['participant_id'].isin(pax_ids_in_antiox)]
     
