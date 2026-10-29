@@ -12,6 +12,7 @@ Step 2: Comprehensive analysis including:
 
 import pandas as pd
 import numpy as np
+import os
 from scipy import stats
 from scipy.stats import ttest_ind, chi2_contingency
 import statsmodels.api as sm
@@ -29,7 +30,7 @@ from longcovid_symptoms import get_longcovid_symptom_variables
 def calculate_hosp_ed_visits_28days(df, pax_random):
     """
     Calculate all-cause hospitalization and ED visits within 28 days.
-    Returns binary outcome: 1 if any hospitalization/ED visit, 0 otherwise.
+    Unobserved outcomes are missing; observed negative responses are zero.
     """
     
     # Relevant events: Day 1, Day 4, Day 21, Day 28, and any events containing 'Daily' or 'Flu Pro'
@@ -45,32 +46,36 @@ def calculate_hosp_ed_visits_28days(df, pax_random):
     ed_vars = ['fup_er', 'fup4_er', 'fup_cov_er_visit','fup28_cov_er_visit',
                'pdd_er', 'fpp_er']
     
-    # df_followup_hosp_ed = df_followup[hosp_vars + ed_vars + ['participant_id']].copy()
+    def observed_binary_responses(values):
+        numeric_values = pd.to_numeric(values, errors='coerce')
+        string_values = values.astype('string').str.strip().str.lower()
+        yes = numeric_values.eq(1) | string_values.isin(['true', 'yes'])
+        no = numeric_values.eq(0) | string_values.isin(['false', 'no'])
+        return yes, no
+
+    def any_event(person_data, variables):
+        observed = False
+        for variable in variables:
+            if variable not in person_data.columns:
+                continue
+            yes, no = observed_binary_responses(person_data[variable])
+            if yes.any():
+                return 1
+            observed = observed or bool(no.any())
+        return 0 if observed else np.nan
+
     results = []
     
     for pid in pax_random['participant_id'].unique():
         person_data = df_followup[df_followup['participant_id'] == pid]
         
-        # Check for any hospitalization
-        hosp = 0
-        for hvar in hosp_vars:
-            if hvar in person_data.columns:
-                if person_data[hvar].notna().any():
-                    # Check if any non-zero, non-empty value
-                    if (person_data[hvar] == 1).any() or (person_data[hvar] == 'True').any():
-                        hosp = 1
-                        break
-        
-        # Check for ED visit
-        ed = 0
-        for evar in ed_vars:
-            if evar in person_data.columns:
-                if (person_data[evar] == 1).any() or (person_data[evar] == 'True').any():
-                    ed = 1
-                    break
-        
-        # Combined outcome: any hospitalization OR ED visit
-        hosp_or_ed = 1 if (hosp == 1 or ed == 1) else 0
+        hosp = any_event(person_data, hosp_vars)
+        ed = any_event(person_data, ed_vars)
+        hosp_or_ed = (
+            1 if hosp == 1 or ed == 1
+            else 0 if hosp == 0 and ed == 0
+            else np.nan
+        )
         
         results.append({
             'participant_id': pid,
@@ -113,18 +118,18 @@ def calculate_time_to_recovery(df, pax_random, recovery_col='recover'):
         elif fpp_col in person_data.columns:
             series = person_data[fpp_col]
         else:
-            return None, None, 0
+            return None, None, None, None
         series = pd.to_numeric(series, errors='coerce')
+        if not series.notna().any():
+            return None, None, None, None
         first = first_change_to_1(series)
         sustained = sustain_change_to_1(series)
-        if sustained is not None:
-            sus_recovered_binary = 1 if sustained <= 14 else 0
-        else:
-            sus_recovered_binary = None
-        if first is not None and first <= 14:
-            first_recovered_binary = 1
-        else:            
-            first_recovered_binary = 0
+        sus_recovered_binary = (
+            int(sustained <= 14) if sustained is not None else None
+        )
+        first_recovered_binary = (
+            int(first <= 14) if first is not None else None
+        )
         return first, sustained, first_recovered_binary, sus_recovered_binary
 
     # # User specifies which recovery variable to use (e.g., 'recover', 'return_health', etc.)
@@ -189,11 +194,22 @@ def extract_who_longcovid(df, pax_random):
 def calculate_symptom_burden_score(df, pax_random):
     """
     Calculate total symptom burden score by summing all symptom ratings.
-    Symptom variables use 0-3 scale.
+    Severity responses use 0-3; binary Yes/No responses are scored 3/0, with
+    88 (not applicable) scored as 0.
     """
     
     # All symptom variables from the codebook
-    symptom_vars = get_longcovid_symptom_variables()['all_symptoms']
+    symptom_definitions = get_longcovid_symptom_variables()
+    symptom_vars = symptom_definitions['all_symptoms']
+    binary_symptom_vars = set(symptom_definitions['binary_symptoms'])
+
+    def score_symptom_value(variable, value):
+        value = pd.to_numeric(value, errors='coerce')
+        if pd.isna(value):
+            return np.nan
+        if variable in binary_symptom_vars:
+            return {0: 0, 1: 3, 88: 0}.get(value, np.nan)
+        return value
     
     results_day90 = []
     results_week36 = []
@@ -212,7 +228,7 @@ def calculate_symptom_burden_score(df, pax_random):
             symptom_values = []
             for svar in symptom_vars:
                 if svar in person_data.columns:
-                    val = pd.to_numeric(person_data[svar].iloc[0], errors='coerce')
+                    val = score_symptom_value(svar, person_data[svar].iloc[0])
                     if pd.notna(val):
                         symptom_values.append(val)
             
@@ -238,7 +254,7 @@ def calculate_symptom_burden_score(df, pax_random):
             symptom_values = []
             for svar in symptom_vars:
                 if svar in person_data.columns:
-                    val = pd.to_numeric(person_data[svar].iloc[0], errors='coerce')
+                    val = score_symptom_value(svar, person_data[svar].iloc[0])
                     if pd.notna(val):
                         symptom_values.append(val)
             
@@ -274,37 +290,80 @@ def calculate_food_security_score(row):
     Note: Using available food security variables from the dataset.
     """
     score = 0
+    answered_items = 0
     # house_food: worried food would run out (1=Often true, 2=Sometimes true)
     val = row.get('house_food')
-    if val is not None and not pd.isna(val) and int(val) <= 2:
-        score += 1
+    if val is not None and not pd.isna(val):
+        try:
+            raw_value = float(val)
+            value = int(raw_value) if raw_value.is_integer() else None
+        except (TypeError, ValueError):
+            value = None
+        if value in {1, 2, 3, 4}:
+            answered_items += 1
+            score += int(value <= 2)
     
     # house__food_last: food didn't last (1=Often true, 2=Sometimes true)
     val = row.get('house__food_last')
-    if val is not None and not pd.isna(val) and int(val) <= 2:
-        score += 1
+    if val is not None and not pd.isna(val):
+        try:
+            raw_value = float(val)
+            value = int(raw_value) if raw_value.is_integer() else None
+        except (TypeError, ValueError):
+            value = None
+        if value in {1, 2, 3, 4}:
+            answered_items += 1
+            score += int(value <= 2)
     
     val = row.get('house_meals')
-    if val is not None and not pd.isna(val) and int(val) <= 2:
-        score += 1
+    if val is not None and not pd.isna(val):
+        try:
+            raw_value = float(val)
+            value = int(raw_value) if raw_value.is_integer() else None
+        except (TypeError, ValueError):
+            value = None
+        if value in {1, 2, 3, 4}:
+            answered_items += 1
+            score += int(value <= 2)
         
-    val = row.get('house_meal_size')
-    if val is not None and not pd.isna(val) and int(val) == 1:
-        score += 1
+    val = row.get('house_meals_size')
+    if val is not None and not pd.isna(val):
+        try:
+            raw_value = float(val)
+            value = int(raw_value) if raw_value.is_integer() else None
+        except (TypeError, ValueError):
+            value = None
+        if value in {0, 1}:
+            answered_items += 1
+            score += int(value == 1)
         
     # val = row.get('house_meals_cut_often')
     # if val is not None and not pd.isna(val) and int(val) <= 2:
     #     score += 1
         
     val = row.get('house_eat_less')
-    if val is not None and not pd.isna(val) and int(val) == 1:
-        score += 1
+    if val is not None and not pd.isna(val):
+        try:
+            raw_value = float(val)
+            value = int(raw_value) if raw_value.is_integer() else None
+        except (TypeError, ValueError):
+            value = None
+        if value in {0, 1}:
+            answered_items += 1
+            score += int(value == 1)
     
     val = row.get('house_hungry')
-    if val is not None and not pd.isna(val) and int(val) == 1:
-        score += 1
+    if val is not None and not pd.isna(val):
+        try:
+            raw_value = float(val)
+            value = int(raw_value) if raw_value.is_integer() else None
+        except (TypeError, ValueError):
+            value = None
+        if value in {0, 1}:
+            answered_items += 1
+            score += int(value == 1)
     
-    return score  
+    return score if answered_items else np.nan
 
 
 
@@ -396,10 +455,131 @@ def extract_demographics(df, pax_random):
 
 
 
-def run_regression_analysis(combined_df, outcome_var, outcome_type='continuous', include_randomization=True):
+def _prepare_regression_predictors(combined_df, include_randomization=True):
+    """Create regression predictors while preserving genuinely missing values."""
+    analysis_df = combined_df.copy()
+    if 'rand_group' in analysis_df.columns:
+        analysis_df = analysis_df[
+            analysis_df['rand_group'].isin(['Paxlovid', 'Usual Care'])
+        ].copy()
+    if include_randomization:
+        analysis_df['rand_group_01'] = (
+            analysis_df['rand_group'] == 'Paxlovid'
+        ).astype(float)
+
+    analysis_df['age_num'] = pd.to_numeric(analysis_df['age'], errors='coerce')
+    analysis_df['education_num'] = pd.to_numeric(
+        analysis_df['education'], errors='coerce'
+    )
+    analysis_df['income_num'] = pd.to_numeric(
+        analysis_df['income'], errors='coerce'
+    )
+    analysis_df['food_security_num'] = pd.to_numeric(
+        analysis_df['food_security_score'], errors='coerce'
+    )
+
+    sex = pd.to_numeric(analysis_df['sex'], errors='coerce')
+    valid_sex = sex.isin([1, 2, 3])
+    analysis_df['sex_female'] = (sex == 2).where(valid_sex, np.nan).astype(float)
+    analysis_df['sex_intersex'] = (sex == 3).where(valid_sex, np.nan).astype(float)
+
+    race = pd.to_numeric(analysis_df['race'], errors='coerce')
+    valid_race = race.isin([1, 2, 3, 4, 5, 6, 7, 8, 9, 99])
+    analysis_df['race_mixed_other'] = (
+        race.isin([2, 3, 4, 5, 6, 7, 8, 9, 99])
+        .where(valid_race, np.nan)
+        .astype(float)
+    )
+
+    employment = pd.to_numeric(analysis_df['employment'], errors='coerce')
+    valid_employment = employment.isin(range(1, 11))
+    analysis_df['employed'] = (
+        employment.isin([2, 3, 4])
+        .where(valid_employment, np.nan)
+        .astype(float)
+    )
+
+    housing = pd.to_numeric(analysis_df['housing'], errors='coerce')
+    valid_housing = housing.isin([1, 2, 3, 4, 5, 6, 7, 99])
+    analysis_df['own_home'] = (
+        (housing == 2).where(valid_housing, np.nan).astype(float)
+    )
+    analysis_df['rent_home'] = (
+        (housing == 1).where(valid_housing, np.nan).astype(float)
+    )
+
+    predictors = (['rand_group_01'] if include_randomization else []) + [
+        'age_num', 'education_num', 'income_num', 'food_security_num',
+        'sex_female', 'sex_intersex', 'race_mixed_other',
+        'employed', 'own_home', 'rent_home'
+    ]
+    indicator_predictors = {
+        'rand_group_01', 'sex_female', 'sex_intersex', 'race_mixed_other',
+        'employed', 'own_home', 'rent_home'
+    }
+    continuous_predictors = [
+        'age_num', 'education_num', 'income_num', 'food_security_num'
+    ]
+    return analysis_df, predictors, indicator_predictors, continuous_predictors
+
+
+def _pool_multiple_imputation_estimates(estimates, variances):
+    """Pool estimates and standard errors using Rubin's rules."""
+    estimates = np.asarray(estimates, dtype=float)
+    variances = np.asarray(variances, dtype=float)
+    m = len(estimates)
+    if m < 2:
+        raise ValueError('At least two successful imputations are required.')
+
+    estimate = float(estimates.mean())
+    within_variance = float(variances.mean())
+    between_variance = float(estimates.var(ddof=1))
+    total_variance = within_variance + (1 + 1 / m) * between_variance
+    standard_error = float(np.sqrt(total_variance))
+    if not np.isfinite(standard_error) or standard_error == 0:
+        return estimate, standard_error, np.nan, np.nan, np.nan
+
+    if between_variance == 0:
+        degrees_freedom = np.inf
+    elif within_variance == 0:
+        degrees_freedom = float(m - 1)
+    else:
+        relative_increase = (1 + 1 / m) * between_variance / within_variance
+        degrees_freedom = (
+            (m - 1) * (1 + 1 / relative_increase) ** 2
+            if relative_increase > 0 else np.inf
+        )
+    critical_value = (
+        stats.t.ppf(0.975, degrees_freedom)
+        if np.isfinite(degrees_freedom) else stats.norm.ppf(0.975)
+    )
+    test_statistic = estimate / standard_error
+    p_value = (
+        2 * stats.t.sf(abs(test_statistic), degrees_freedom)
+        if np.isfinite(degrees_freedom)
+        else 2 * stats.norm.sf(abs(test_statistic))
+    )
+    return (
+        estimate,
+        standard_error,
+        float(estimate - critical_value * standard_error),
+        float(estimate + critical_value * standard_error),
+        float(p_value)
+    )
+
+
+def run_regression_analysis(
+    combined_df,
+    outcome_var,
+    outcome_type='continuous',
+    include_randomization=True,
+    n_imputations=20,
+    random_state=42
+):
     """
     Run regression analysis for associations between demographics and outcomes.
-    Standardizes continuous predictors (age, education, income, food_security) to mean=0, std=1.
+    Uses multiple chained-equation imputations for missing predictors and pools
+    estimates and uncertainty using Rubin's rules.
     
     Parameters:
     - combined_df: DataFrame with all variables
@@ -407,190 +587,175 @@ def run_regression_analysis(combined_df, outcome_var, outcome_type='continuous',
     - outcome_type: 'continuous' for OLS, 'binary' for logistic
     """
     
-    # Prepare data
-    analysis_df = combined_df.copy()
-    
-    ## include randomization data to adjust for treatment arm
-    if include_randomization:
-        analysis_df['rand_group_01'] = pd.to_numeric(analysis_df['rand_group'].map({'Paxlovid': 1,  'Usual Care': 0}), errors='coerce')
-    # Convert numeric predictors
-    analysis_df['age_num'] = pd.to_numeric(analysis_df['age'], errors='coerce')
-    analysis_df['education_num'] = pd.to_numeric(analysis_df['education'], errors='coerce')
-    analysis_df['income_num'] = pd.to_numeric(analysis_df['income'], errors='coerce')
-    analysis_df['food_security_num'] = pd.to_numeric(analysis_df['food_security_score'], errors='coerce')
-    
-    # Create dummy variables for categorical predictors (sex, race, employment, housing)
-    # Sex: 1=Male, 2=Female -> dummy: sex_female (1 if female, 0 if male)
-    analysis_df['sex_female'] = (pd.to_numeric(analysis_df['sex'], errors='coerce') == 2).astype(float)
-    analysis_df['sex_intersex'] = (pd.to_numeric(analysis_df['sex'], errors='coerce') == 3).astype(float) 
-    
-    # Race: 1=White, 2=Black, 3=Latino, 4=Asian, 5=Indigenous, 9=Mixed, 99=Other
-    # Create dummies with White as reference
-    race_num = pd.to_numeric(analysis_df['race'], errors='coerce')
-    analysis_df['race_mixed_other'] = (race_num.isin([2, 3, 4, 5, 9, 99])).astype(float)
-    
-    # Employment: 
-    # 1: Unemployed/seeking employment, 
-    # 2: Employed (full time including self-employed) 
-    # 3: Employed (part time, including self-employed), 
-    # 4: On leave from work (maternity, parental, sick leave)
-    # 5: Volunteer work, unpaid
-    # 6: Retired
-    # 7: Student
-    # 8: Housewife/husband
-    # 9: Unable to work/disabled
-    # 10: Other
-    employment_num = pd.to_numeric(analysis_df['employment'], errors='coerce')
-    analysis_df['employed'] = (employment_num.isin([2, 3, 4])).astype(float)
-    
-    # Housing: create own_home dummy (1=own home, 0=rent/other)
-    # Codebook: 1=Renting, 2=Own home, 3=Assisted living, 4=Boarding/Group home,
-    # 5=Shelter/hostel, 6=Lives with family/friend, 7=Homeless, 99=Other
-    housing_num = pd.to_numeric(analysis_df['housing'], errors='coerce')
-    analysis_df['own_home'] = (housing_num == 2).astype(float)
-    analysis_df['rent_home'] = (housing_num == 1).astype(float)
+    if outcome_type not in {'continuous', 'binary'}:
+        raise ValueError("outcome_type must be 'continuous' or 'binary'.")
+    if n_imputations < 2:
+        raise ValueError('n_imputations must be at least 2 for pooled inference.')
 
-    # Define predictors (all numeric dummy variables)
-    predictors = ['rand_group_01'] if include_randomization else []
-    predictors += ['age_num', 'education_num', 'income_num', 'food_security_num',
-                  'sex_female', 'sex_intersex', 'race_mixed_other',
-                  'employed', 'own_home', 'rent_home']
-    
-    # Prepare outcome
+    analysis_df, predictors, indicator_predictors, continuous_predictors = (
+        _prepare_regression_predictors(combined_df, include_randomization)
+    )
     analysis_df['outcome'] = pd.to_numeric(analysis_df[outcome_var], errors='coerce')
-
-    # Drop rows with missing outcome
     analysis_df = analysis_df.dropna(subset=['outcome'])
+    if outcome_type == 'binary' and not analysis_df['outcome'].isin([0, 1]).all():
+        raise ValueError(f'{outcome_var} must contain only 0/1 binary outcomes.')
     if len(analysis_df) < 10:
         print(f"Insufficient data for {outcome_var} regression (n={len(analysis_df)})")
         return None
 
-    # Prepare X matrix
     X = analysis_df[predictors].copy()
-    
-    # Impute missing predictor values using MICE (sklearn's IterativeImputer)
-    try:
-        from sklearn.experimental import enable_iterative_imputer
-        from sklearn.impute import IterativeImputer
-        imputer = IterativeImputer(random_state=42, max_iter=10)
-        X_values = X.values.astype(np.float64)
-        X_imputed = imputer.fit_transform(X_values)
-        X = pd.DataFrame(X_imputed, columns=predictors, index=analysis_df.index)
-    except Exception as e:
-        print(f"MICE imputation failed ({e}), dropping rows with missing predictors.")
-        X = X.dropna()
-        analysis_df = analysis_df.loc[X.index]
-    
-    # Remove predictors with very low variance (e.g., sex_intersex with <5 positive cases)
     predictors_to_drop = []
-    for pred in X.columns:
-        if X[pred].std() < 0.01 or X[pred].sum() < 5:  # Very low variance or <5 positive cases
-            predictors_to_drop.append(pred)
-    
+    for predictor in X.columns:
+        observed = X[predictor].dropna()
+        if observed.empty or observed.std() < 0.01:
+            predictors_to_drop.append(predictor)
+        elif predictor in indicator_predictors and observed.sum() < 5:
+            predictors_to_drop.append(predictor)
     if len(predictors_to_drop) > 0:
         print(f"  Removing low-variance predictors for {outcome_var}: {predictors_to_drop}")
         X = X.drop(columns=predictors_to_drop)
-    
-    # Standardize continuous predictors (age, education, income, food_security)
-    continuous_predictors = ['age_num', 'education_num', 'income_num', 'food_security_num']
-    for pred in continuous_predictors:
-        if pred in X.columns:
-            mean_val = X[pred].mean()
-            std_val = X[pred].std()
-            if std_val > 0:  # Avoid division by zero
-                X[pred] = (X[pred] - mean_val) / std_val
-    
-    # Ensure all predictors are float64
-    X = X.astype(np.float64)
-    # Align y with X
-    y = analysis_df.loc[X.index, 'outcome'].values.astype(np.float64)
-    # Add constant
-    X_with_const = sm.add_constant(X.values.astype(np.float64))
-    
-    if len(y) < 10:
-        print(f"Insufficient data for {outcome_var} regression after cleaning (n={len(y)})")
+    if X.empty or len(X.columns) == 0:
+        print(f"No usable predictors for {outcome_var} regression.")
         return None
-    
+    for predictor in continuous_predictors:
+        if predictor not in X:
+            continue
+        mean_value = X[predictor].mean()
+        std_value = X[predictor].std()
+        if std_value > 0:
+            X[predictor] = (X[predictor] - mean_value) / std_value
+
     try:
-        if outcome_type == 'continuous':
-            model = sm.OLS(y, X_with_const).fit()
-        else:  # binary
-            model = sm.Logit(y, X_with_const).fit(disp=0, maxiter=100)
-        
-        # Extract results (const is at index 0, predictors start at index 1)
-        results = []
-        param_names = ['const'] + list(X.columns)
-        for i, var in enumerate(param_names):
-            results.append({
-                'outcome': outcome_var,
-                'predictor': var,
-                'coefficient': float(model.params[i]),
-                'se': float(model.bse[i]),
-                'pvalue': float(model.pvalues[i]),
-                'ci_lower': float(model.conf_int()[i, 0]),
-                'ci_upper': float(model.conf_int()[i, 1]),
-                'n': len(y)
-            })
-        
-        # Adjusted ARD via recycled predictions (G-computation) – binary outcomes only
-        if outcome_type == 'binary' and 'rand_group_01' in list(X.columns):
-            try:
-                X_np   = X.values.astype(np.float64)
-                col_idx = list(X.columns).index('rand_group_01')
-                X1_arr  = X_np.copy();  X1_arr[:, col_idx] = 1.0
-                X0_arr  = X_np.copy();  X0_arr[:, col_idx] = 0.0
-                p1_arr  = model.predict(sm.add_constant(X1_arr, has_constant='add'))
-                p0_arr  = model.predict(sm.add_constant(X0_arr, has_constant='add'))
-                ard_adj = float(p1_arr.mean() - p0_arr.mean())
-                # Bootstrap SE (500 iterations) – refit on each bootstrap sample so
-                # CIs capture model estimation uncertainty, not just averaging noise.
-                # Previous code kept model fixed → artificially narrow CIs (revision 10 fix).
-                np.random.seed(42)
-                n_obs = X_np.shape[0]
-                ards_boot = []
-                for _b in range(500):
-                    idx_b    = np.random.choice(n_obs, n_obs, replace=True)
-                    y_b      = y[idx_b]
-                    X_b_c    = sm.add_constant(X_np[idx_b], has_constant='add')
-                    try:
-                        model_b = sm.Logit(y_b, X_b_c).fit(disp=0, maxiter=100)
-                    except Exception:
-                        continue
-                    # G-computation on the original (full) data using re-estimated model
-                    p1_b = model_b.predict(sm.add_constant(X1_arr, has_constant='add'))
-                    p0_b = model_b.predict(sm.add_constant(X0_arr, has_constant='add'))
-                    ards_boot.append(float(p1_b.mean() - p0_b.mean()))
-                se_boot   = float(np.std(ards_boot))
-                ci_lo_adj = ard_adj - 1.96 * se_boot
-                ci_hi_adj = ard_adj + 1.96 * se_boot
-                z_adj     = ard_adj / se_boot if se_boot > 0 else np.nan
-                pval_adj  = float(2 * (1 - stats.norm.cdf(abs(z_adj)))) if not np.isnan(z_adj) else np.nan
-                results.append({
-                    'outcome':     outcome_var,
-                    'predictor':   '[adjusted_ard]',
-                    'coefficient': round(ard_adj * 100, 3),
-                    'se':          round(se_boot * 100, 3),
-                    'pvalue':      round(pval_adj, 3),
-                    'ci_lower':    round(ci_lo_adj * 100, 3),
-                    'ci_upper':    round(ci_hi_adj * 100, 3),
-                    'n':           len(y)
-                })
-            except Exception as e_ard:
-                print(f"  Adjusted ARD computation failed: {e_ard}")
+        from sklearn.experimental import enable_iterative_imputer  # noqa: F401
+        from sklearn.impute import IterativeImputer
+    except ImportError as error:
+        raise ImportError(
+            'scikit-learn is required for multiple imputation.'
+        ) from error
 
-        return pd.DataFrame(results)
+    y = analysis_df['outcome'].to_numpy(dtype=np.float64)
+    parameter_names = ['const'] + list(X.columns)
+    parameter_estimates = {name: [] for name in parameter_names}
+    parameter_variances = {name: [] for name in parameter_names}
+    ard_estimates = []
+    ard_variances = []
+    failed_imputations = 0
 
-    except Exception as e:
-        print(f"Regression failed for {outcome_var} ({e})")
+    for imputation_number in range(n_imputations):
+        imputer = IterativeImputer(
+            random_state=random_state + imputation_number,
+            max_iter=10,
+            sample_posterior=True
+        )
+        imputation_data = X.copy()
+        imputation_data['_outcome_for_imputation'] = y
+        imputed_values = imputer.fit_transform(
+            imputation_data.to_numpy(dtype=np.float64)
+        )[:, :len(X.columns)]
+        imputed_X = pd.DataFrame(
+            imputed_values, columns=X.columns, index=X.index
+        )
+        for predictor in indicator_predictors.intersection(imputed_X.columns):
+            imputed_X[predictor] = imputed_X[predictor].clip(0, 1).round()
+
+        design = sm.add_constant(imputed_X.to_numpy(dtype=np.float64))
+        try:
+            model = (
+                sm.OLS(y, design).fit()
+                if outcome_type == 'continuous'
+                else sm.Logit(y, design).fit(disp=0, maxiter=200)
+            )
+        except Exception as error:
+            failed_imputations += 1
+            print(
+                f"  Imputation {imputation_number + 1} failed for "
+                f"{outcome_var}: {error}"
+            )
+            continue
+
+        for index, name in enumerate(parameter_names):
+            parameter_estimates[name].append(float(model.params[index]))
+            parameter_variances[name].append(float(model.bse[index] ** 2))
+
+        if outcome_type == 'binary' and 'rand_group_01' in imputed_X:
+            treatment_index = list(imputed_X.columns).index('rand_group_01')
+            x1 = imputed_X.to_numpy(dtype=np.float64)
+            x0 = x1.copy()
+            x1[:, treatment_index] = 1
+            x0[:, treatment_index] = 0
+            x1_design = sm.add_constant(x1, has_constant='add')
+            x0_design = sm.add_constant(x0, has_constant='add')
+            p1 = model.predict(x1_design)
+            p0 = model.predict(x0_design)
+            ard = float(np.mean(p1 - p0))
+            p1_gradient = p1 * (1 - p1)
+            p0_gradient = p0 * (1 - p0)
+            gradient = np.mean(
+                p1_gradient[:, None] * x1_design
+                - p0_gradient[:, None] * x0_design,
+                axis=0
+            )
+            ard_variance = float(
+                gradient @ np.asarray(model.cov_params()) @ gradient
+            )
+            ard_estimates.append(ard * 100)
+            ard_variances.append(max(ard_variance, 0) * 10000)
+
+    successful_imputations = len(parameter_estimates['const'])
+    if successful_imputations < 2:
+        print(
+            f"Regression failed for {outcome_var}: only "
+            f"{successful_imputations} imputations converged."
+        )
         return None
 
+    results = []
+    for name in parameter_names:
+        estimate, standard_error, ci_lower, ci_upper, pvalue = (
+            _pool_multiple_imputation_estimates(
+                parameter_estimates[name], parameter_variances[name]
+            )
+        )
+        results.append({
+            'outcome': outcome_var,
+            'predictor': name,
+            'coefficient': estimate,
+            'se': standard_error,
+            'pvalue': pvalue,
+            'ci_lower': ci_lower,
+            'ci_upper': ci_upper,
+            'n': len(y),
+            'imputations': successful_imputations,
+            'failed_imputations': failed_imputations,
+            'imputation_method': 'IterativeImputer with Rubin pooling'
+        })
+
+    if ard_estimates:
+        estimate, standard_error, ci_lower, ci_upper, pvalue = (
+            _pool_multiple_imputation_estimates(ard_estimates, ard_variances)
+        )
+        results.append({
+            'outcome': outcome_var,
+            'predictor': '[adjusted_ard]',
+            'coefficient': estimate,
+            'se': standard_error,
+            'pvalue': pvalue,
+            'ci_lower': ci_lower,
+            'ci_upper': ci_upper,
+            'n': len(y),
+            'imputations': len(ard_estimates),
+            'failed_imputations': n_imputations - len(ard_estimates),
+            'imputation_method': 'IterativeImputer with Rubin pooling'
+        })
+
+    return pd.DataFrame(results)
 
 
 def format_regression_results_table(regression_df_path: str, 
                                     outcomes=['who_longcovid_day90', 'symptom_burden_day90']):
     """
-    Format regression results into a table showing adjusted OR (binary) or
-    adjusted mean difference (continuous) with 95% CI.
+    Format regression results as adjusted ORs for binary outcomes and adjusted
+    regression coefficients (mean-score differences) for continuous outcomes.
     
     Output: DataFrame with predictors as rows and outcomes as columns.
     """
@@ -599,16 +764,23 @@ def format_regression_results_table(regression_df_path: str,
     except Exception as e:
         print(f"Error reading regression results: {e}")
         return None
-    predictors = reg_df['predictor'].unique()
+    predictors = reg_df['predictor'].drop_duplicates().tolist()
     
     rows = []
     for pred in predictors:
-        row = {'Variable': pred}
+        row = {
+            'Variable': 'Adjusted ARD' if pred == '[adjusted_ard]' else pred
+        }
         for outcome in outcomes:
             matches = reg_df[(reg_df['outcome'] == outcome) & (reg_df['predictor'] == pred)]
+            is_binary = 'longcovid' in outcome.lower()
+            outcome_est = f'{outcome}_est'
+            ard_est = f'{outcome}_ard'
             
             if len(matches) == 0:
-                row[f'{outcome}_est'] = 'N/A'
+                row[outcome_est] = 'N/A'
+                if is_binary:
+                    row[ard_est] = 'N/A'
                 continue
             
             m = matches.iloc[0]
@@ -616,26 +788,46 @@ def format_regression_results_table(regression_df_path: str,
             ci_hi = m['ci_upper']
             coef = m['coefficient']
             
-            if 'longcovid' in outcome.lower():  # Binary → OR
-                try:
-                    or_est = np.exp(coef)
-                    or_lo = np.exp(ci_lo)
-                    or_hi = np.exp(ci_hi)
-                    row[f'{outcome}_est'] = f"{or_est:.3f} ({or_lo:.3f}–{or_hi:.3f})"
-                except:
-                    row[f'{outcome}_est'] = 'N/A'
-            else:  # Continuous → Mean difference
-                row[f'{outcome}_est'] = f"{coef:.3f} ({ci_lo:.3f}–{ci_hi:.3f})"
+            if is_binary and pred == '[adjusted_ard]':
+                row[outcome_est] = 'N/A'
+                row[ard_est] = (
+                    f"{coef:.2f} percentage points "
+                    f"({ci_lo:.2f} to {ci_hi:.2f})"
+                )
+            elif is_binary:
+                with np.errstate(over='ignore', invalid='ignore'):
+                    odds_ratio, odds_lower, odds_upper = np.exp(
+                        [coef, ci_lo, ci_hi]
+                    )
+                row[outcome_est] = (
+                    f"{odds_ratio:.3f} ({odds_lower:.3f}–{odds_upper:.3f})"
+                    if np.isfinite([odds_ratio, odds_lower, odds_upper]).all()
+                    else 'N/A'
+                )
+                row[ard_est] = 'N/A'
+            else:
+                row[outcome_est] = f"{coef:.3f} ({ci_lo:.3f}–{ci_hi:.3f})"
             
         rows.append(row)
             
     result_df = pd.DataFrame(rows)
-    ## change column names 
     for outcome in outcomes:
+        visit = 'Week 36' if 'week36' in outcome.lower() else 'Day 90'
         if 'longcovid' in outcome.lower():
-            result_df.rename(columns={f'{outcome}_est': 'Long COVID Day 90 adjusted OR (95% CI)'}, inplace=True)
+            result_df.rename(columns={
+                f'{outcome}_est': f'Long COVID {visit} adjusted OR (95% CI)',
+                f'{outcome}_ard': (
+                    f'Long COVID {visit} adjusted ARD '
+                    '(percentage points; 95% CI)'
+                )
+            }, inplace=True)
         else:
-            result_df.rename(columns={f'{outcome}_est': 'SBQ-LC Day 90 adjusted mean difference (95% CI)'}, inplace=True)
+            result_df.rename(columns={
+                f'{outcome}_est': (
+                    f'SBQ-LC {visit} adjusted regression coefficient '
+                    '(mean-score difference; 95% CI)'
+                )
+            }, inplace=True)
     return result_df
 
     
@@ -664,34 +856,48 @@ def summarize_outcomes_by_group(combined_df, outcomes_dict):
                 else:
                     group_df = df_filtered[df_filtered['rand_group'] == group]
                 
-                outcome_data = pd.to_numeric(group_df[outcome_name], errors='coerce')
-                n = outcome_data.notna().sum()
+                outcome_data = pd.to_numeric(
+                    group_df[outcome_name], errors='coerce'
+                )
+                outcome_data = outcome_data[outcome_data.isin([0, 1])]
+                n = len(outcome_data)
                 n_yes = (outcome_data == 1).sum()
                 pct = 100 * n_yes / n if n > 0 else 0
                 
                 row[f'{group}_n_yes'] = f"{n_yes}/{n} ({pct:.3f}%)"
             
             # Chi-square test
-            try:
-                pax_data = pd.to_numeric(df_filtered[df_filtered['rand_group'] == 'Paxlovid'][outcome_name], errors='coerce')
-                uc_data = pd.to_numeric(df_filtered[df_filtered['rand_group'] == 'Usual Care'][outcome_name], errors='coerce')
-                
-                contingency = pd.crosstab(
-                    df_filtered['rand_group'],
-                    pd.to_numeric(df_filtered[outcome_name], errors='coerce')
-                )
-                chi2, pval, dof, expected = chi2_contingency(contingency)
-                row['p_value'] = round(pval, 3)
-            except:
+            valid_binary = pd.to_numeric(
+                df_filtered[outcome_name], errors='coerce'
+            ).isin([0, 1])
+            test_df = df_filtered.loc[valid_binary].copy()
+            test_df[outcome_name] = pd.to_numeric(
+                test_df[outcome_name], errors='coerce'
+            )
+            contingency = pd.crosstab(
+                test_df['rand_group'], test_df[outcome_name]
+            )
+            if contingency.shape == (2, 2):
+                _, pval, _, _ = chi2_contingency(contingency)
+                row['p_value'] = pval
+            else:
                 row['p_value'] = np.nan
 
             # Unadjusted Absolute Risk Difference (Paxlovid - Usual Care) with 95% CI
-            try:
-                pax_out = pd.to_numeric(df_filtered[df_filtered['rand_group'] == 'Paxlovid'][outcome_name], errors='coerce').dropna()
-                uc_out  = pd.to_numeric(df_filtered[df_filtered['rand_group'] == 'Usual Care'][outcome_name], errors='coerce').dropna()
-                n_pax_ard, n_uc_ard = len(pax_out), len(uc_out)
-                r_pax = pax_out.mean() if n_pax_ard > 0 else np.nan
-                r_uc  = uc_out.mean()  if n_uc_ard  > 0 else np.nan
+            pax_out = pd.to_numeric(
+                df_filtered.loc[df_filtered['rand_group'] == 'Paxlovid', outcome_name],
+                errors='coerce'
+            )
+            uc_out = pd.to_numeric(
+                df_filtered.loc[df_filtered['rand_group'] == 'Usual Care', outcome_name],
+                errors='coerce'
+            )
+            pax_out = pax_out[pax_out.isin([0, 1])]
+            uc_out = uc_out[uc_out.isin([0, 1])]
+            n_pax_ard, n_uc_ard = len(pax_out), len(uc_out)
+            if n_pax_ard and n_uc_ard:
+                r_pax = pax_out.mean()
+                r_uc = uc_out.mean()
                 ard   = r_pax - r_uc
                 se_ard = np.sqrt(r_pax * (1 - r_pax) / n_pax_ard + r_uc * (1 - r_uc) / n_uc_ard)
                 ci_lo_ard = ard - 1.96 * se_ard
@@ -700,7 +906,7 @@ def summarize_outcomes_by_group(combined_df, outcomes_dict):
                 p_ard = float(2 * (1 - stats.norm.cdf(abs(z_ard)))) if not np.isnan(z_ard) else np.nan
                 row['ard_unadj']        = f"{ard*100:.3f}% ({ci_lo_ard*100:.3f}% to {ci_hi_ard*100:.3f}%)"
                 row['ard_unadj_pvalue'] = round(p_ard, 3)
-            except Exception:
+            else:
                 row['ard_unadj']        = np.nan
                 row['ard_unadj_pvalue'] = np.nan
 
@@ -759,7 +965,8 @@ def run_bayesian_analysis(combined_df, output_dir):
       continuous: Stan Code Mixed Normal LongCovid.stan
 
     Covariates: age, vaccination status, comorbidity.
-    Falls back to frequentist mixed-model (statsmodels MixedLM) if Stan fails.
+    Falls back to a pooled frequentist model with time and interaction terms
+    if Stan is unavailable or fails.
     Returns a DataFrame formatted for reporting (4 rows, one per outcome/timepoint).
     """
     import os as _os
@@ -791,10 +998,6 @@ def run_bayesian_analysis(combined_df, output_dir):
     age_raw    = age_raw.fillna(age_raw.mean())
     vax_raw    = vax_raw.fillna(vax_raw.median() if vax_raw.notna().any() else 2.0)
     comorb_raw = comorb_raw.fillna(0)
-
-    def _std(s):
-        sd = s.std()
-        return (s - s.mean()) / sd if sd > 0 else s - s.mean()
 
     # ── Stan availability ─────────────────────────────────────────────────────
     try:
@@ -874,7 +1077,8 @@ def run_bayesian_analysis(combined_df, output_dir):
 
     # ── Helper: run one Stan mixed-effects model ──────────────────────────────
     def _run_stan_mixed(stan_file, stan_data, out_type):
-        fit = CmdStanModel(stan_file=stan_file).sample(
+        # Rebuild so the executable links against the currently configured CmdStan.
+        fit = CmdStanModel(stan_file=stan_file, force_compile=True).sample(
             data=stan_data, chains=4,
             iter_sampling=20000, iter_warmup=10000,
             seed=42, show_progress=False)
@@ -892,8 +1096,12 @@ def run_bayesian_analysis(combined_df, output_dir):
                 coef_d90 = float(mod.params[1])          # gamma
                 coef_w36 = float(mod.params[1] + mod.params[3])  # gamma + zeta
                 se_d90 = float(mod.bse[1])
-                # Approximate SE for Week 36 via delta method (ignore covariance term)
-                se_w36 = float(np.sqrt(mod.bse[1]**2 + mod.bse[3]**2))
+                covariance = np.asarray(mod.cov_params())
+                se_w36 = float(np.sqrt(max(
+                    0,
+                    covariance[1, 1] + covariance[3, 3]
+                    + 2 * covariance[1, 3]
+                )))
                 def _or(coef, se):
                     return (np.exp(coef),
                             np.exp(coef - 1.96*se),
@@ -905,7 +1113,12 @@ def run_bayesian_analysis(combined_df, output_dir):
                 coef_d90 = float(mod.params[1])
                 coef_w36 = float(mod.params[1] + mod.params[3])
                 se_d90   = float(mod.bse[1])
-                se_w36   = float(np.sqrt(mod.bse[1]**2 + mod.bse[3]**2))
+                covariance = np.asarray(mod.cov_params())
+                se_w36 = float(np.sqrt(max(
+                    0,
+                    covariance[1, 1] + covariance[3, 3]
+                    + 2 * covariance[1, 3]
+                )))
                 def _beta(coef, se):
                     return (coef,
                             coef - 1.96*se,
@@ -1116,8 +1329,11 @@ def run_bayesian_analysis(combined_df, output_dir):
         results_df.to_csv(out_file, index=False)
         print(f'  Bayesian results saved to: {out_file}')
         print('\n' + '=' * 70)
-        print('Bayesian Mixed-Effects Analysis Results (revision 9.1)')
-        print('Model: patient random intercepts + treatment x time interaction')
+        print('Longitudinal Analysis Results')
+        print(
+            'Stan models use patient random intercepts and treatment-by-time '
+            'interactions; fallback estimates use pooled regression.'
+        )
         print('Continuous outcomes: standardised z-score in Stan, back-transformed to original scale')
         print('Covariates: age, vaccination status, comorbidity')
         print('Binary OR < 1  / Continuous β < 0  ==>  Paxlovid superior')
@@ -1129,71 +1345,55 @@ def run_bayesian_analysis(combined_df, output_dir):
 
 def check_multicollinearity(combined_df, outcome_var, outcome_type='binary', include_randomization=True):
     """
-    Check multicollinearity of logistic regression predictors using VIF.
+    Check predictor multicollinearity using VIF after one diagnostic imputation.
     VIF > 10 indicates severe multicollinearity; 5-10 is moderate.
     """
     from statsmodels.stats.outliers_influence import variance_inflation_factor
 
-    analysis_df = combined_df.copy()
-    if include_randomization:
-        analysis_df['rand_group_01'] = pd.to_numeric(
-            analysis_df['rand_group'].map({'Paxlovid': 1, 'Usual Care': 0}), errors='coerce')
-
-    # Build predictor matrix (mirrors run_regression_analysis)
-    analysis_df['age_num']          = pd.to_numeric(analysis_df['age'],               errors='coerce')
-    analysis_df['education_num']    = pd.to_numeric(analysis_df['education'],         errors='coerce')
-    analysis_df['income_num']       = pd.to_numeric(analysis_df['income'],            errors='coerce')
-    analysis_df['food_security_num']= pd.to_numeric(analysis_df['food_security_score'], errors='coerce')
-    analysis_df['sex_female']       = (pd.to_numeric(analysis_df['sex'], errors='coerce') == 2).astype(float)
-    analysis_df['sex_intersex']     = (pd.to_numeric(analysis_df['sex'], errors='coerce') == 3).astype(float)
-    race_num = pd.to_numeric(analysis_df['race'], errors='coerce')
-    analysis_df['race_mixed_other'] = race_num.isin([2, 3, 4, 5, 9, 99]).astype(float)
-    emp_num  = pd.to_numeric(analysis_df['employment'], errors='coerce')
-    analysis_df['employed']         = emp_num.isin([2, 3, 4]).astype(float)
-    hous_num = pd.to_numeric(analysis_df['housing'], errors='coerce')
-    analysis_df['own_home']         = (hous_num == 2).astype(float)
-    analysis_df['rent_home']        = (hous_num == 1).astype(float)
-
-    predictors = (['rand_group_01'] if include_randomization else []) + [
-        'age_num', 'education_num', 'income_num', 'food_security_num',
-        'sex_female', 'sex_intersex', 'race_mixed_other',
-        'employed', 'own_home', 'rent_home'
-    ]
-
+    analysis_df, predictors, indicator_predictors, continuous_predictors = (
+        _prepare_regression_predictors(combined_df, include_randomization)
+    )
     analysis_df['outcome'] = pd.to_numeric(analysis_df[outcome_var], errors='coerce')
     analysis_df = analysis_df.dropna(subset=['outcome'])
 
     X = analysis_df[predictors].copy()
-    try:
-        from sklearn.experimental import enable_iterative_imputer
-        from sklearn.impute import IterativeImputer
-        imputer  = IterativeImputer(random_state=42, max_iter=10)
-        X_imputed = imputer.fit_transform(X.values.astype(np.float64))
-        X = pd.DataFrame(X_imputed, columns=predictors, index=analysis_df.index)
-    except Exception:
-        X = X.dropna()
+    low_information = []
+    for predictor in X:
+        observed = X[predictor].dropna()
+        if observed.empty or observed.std() < 0.01:
+            low_information.append(predictor)
+        elif predictor in indicator_predictors and observed.sum() < 5:
+            low_information.append(predictor)
+    X = X.drop(columns=low_information)
+    if X.empty:
+        return pd.DataFrame(columns=[
+            'outcome', 'predictor', 'VIF', 'interpretation'
+        ])
 
-    # Remove low-variance predictors
-    for pred in list(X.columns):
-        if X[pred].std() < 0.01 or X[pred].sum() < 5:
-            X = X.drop(columns=[pred])
+    for predictor in continuous_predictors:
+        if predictor not in X:
+            continue
+        std_value = X[predictor].std()
+        if std_value > 0:
+            X[predictor] = (X[predictor] - X[predictor].mean()) / std_value
 
-    # Standardize continuous predictors
-    for pred in ['age_num', 'education_num', 'income_num', 'food_security_num']:
-        if pred in X.columns:
-            std_val = X[pred].std()
-            if std_val > 0:
-                X[pred] = (X[pred] - X[pred].mean()) / std_val
+    from sklearn.experimental import enable_iterative_imputer  # noqa: F401
+    from sklearn.impute import IterativeImputer
+    imputer = IterativeImputer(random_state=42, max_iter=10)
+    imputed_values = imputer.fit_transform(X.to_numpy(dtype=np.float64))
+    X = pd.DataFrame(imputed_values, columns=X.columns, index=X.index)
+    for predictor in indicator_predictors.intersection(X.columns):
+        X[predictor] = X[predictor].clip(0, 1).round()
 
-    X = X.astype(np.float64)
-    X_const = sm.add_constant(X)
+    X_const = sm.add_constant(X.to_numpy(dtype=np.float64))
 
     vif_rows = []
-    for i, col in enumerate(X_const.columns):
+    predictor_names = ['const'] + list(X.columns)
+    for i, col in enumerate(predictor_names):
         if col == 'const':
             continue
         try:
-            vif_val = variance_inflation_factor(X_const.values, i)
+            vif_val = variance_inflation_factor(X_const, i)
         except Exception:
             vif_val = np.nan
         vif_rows.append({
@@ -1207,10 +1407,10 @@ def check_multicollinearity(combined_df, outcome_var, outcome_type='binary', inc
 
 
 def main():
-    """Main execution function for Step 2 analysis."""
+    """Run frequentist and Bayesian secondary analyses."""
     
     print("=" * 80)
-    print("Long COVID Secondary Analysis: Step 2 - exploratory logistic regression and bayesian mixed-effects models")
+    print("Long COVID Secondary Analysis: Step 2 - multiple-imputation regression and longitudinal Bayesian models")
     print("=" * 80)
     print()
     
@@ -1316,6 +1516,11 @@ def main():
         regression_file = os.path.join(output_dir, 'longcovid_step2_regression_results.csv')
         regression_df.to_csv(regression_file, index=False, float_format='%.3f')
         print(f"\nRegression results saved to: {regression_file}")
+
+    print("\nRunning longitudinal Bayesian mixed-effects models...")
+    bayesian_results = run_bayesian_analysis(combined_df, output_dir)
+    if bayesian_results.empty:
+        print("No Bayesian or fallback model results were produced.")
     
     # ── REVISION 11.1: Commented out pax and uc subgroup saves ──
     # if len(pax_regression_results) > 0:
@@ -1378,4 +1583,3 @@ def main():
 
 if __name__ == '__main__':
     combined_df, outcome_summary = main()
-

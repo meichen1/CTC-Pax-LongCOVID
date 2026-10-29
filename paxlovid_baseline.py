@@ -7,6 +7,7 @@ For Paxlovid vs Usual Care comparison
 import pandas as pd
 import numpy as np
 from scipy import stats
+import os
 
 from longcovid_repo_utils import replace_empty_with_none, load_raw_data, extract_randomization_data
 

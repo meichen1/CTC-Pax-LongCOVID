@@ -11,13 +11,14 @@ from scipy.stats import chi2_contingency, mannwhitneyu, ttest_ind
 import os
 
 
+from longcovid_repo_utils import replace_empty_with_none
 from paxlovid_baseline import load_and_prepare_data, get_randomization_data
 
 
 def get_longcovid_symptom_variables():
     """
-    Define long COVID symptom variables from the codebook.
-    Based on pages 237-259 of the codebook - COMPLETE list of all fup_ variables.
+    Define the scored long COVID symptom variables from the codebook.
+    Free-text and repeating-group other-symptom fields are excluded.
     Returns dictionary with variable names grouped by type.
     """
     
@@ -105,7 +106,7 @@ def get_longcovid_symptom_variables():
         'fup_ent_voice',
         'fup_ent_swallow',
         'fup_ent_ear',
-        'fup_ent_hearing',
+        'fup_ent_hearing', ## Binary: 0=No, 1=Yes
         'fup_ent_tinnitus',
         'fup_ent_sound'
     ]
@@ -116,8 +117,8 @@ def get_longcovid_symptom_variables():
         'fup_stomac_bloating',
         'fup_stomac_nausea',
         'fup_stomac_heartburn',
-        'fup_stomac_wgt_loss',
-        'fup_stomac_wgt_gain',
+        'fup_stomac_wgt_loss',  ## Binary: 0=No, 1=Yes
+        'fup_stomac_wgt_gain',  ## Binary: 0=No, 1=Yes
         'fup_stomac_diarrhea',
         'fup_stomac_constipation'
     ]
@@ -145,7 +146,7 @@ def get_longcovid_symptom_variables():
         'fup_mental_appetite',
         'fup_mental_lonely',
         'fup_mental_hopeful',
-        'fup_mental_person'
+        'fup_mental_person' ## Binary: 0=No, 1=Yes
     ]
     
     # Skin symptoms (8 variables)
@@ -153,61 +154,63 @@ def get_longcovid_symptom_variables():
         'fup_skin_dry',
         'fup_skin_scaly',
         'fup_skin_itchy',
-        'fup_skin_red',
-        'fup_skin_rash',
-        'fup_skin_hives',
+        'fup_skin_red',  ## Binary: 0=No, 1=Yes
+        'fup_skin_rash',  ## Binary: 0=No, 1=Yes
+        'fup_skin_hives',  ## Binary: 0=No, 1=Yes
         'fup_skin_hair',
         'fup_skin_nails'
     ]
     
     # Eye symptoms (10 variables)
     eye_vars = [
-        'fup_eyes_red',
-        'fup_eyes_dry',
-        'fup_eyes_itchy',
+        'fup_eyes_red',  ## Binary: 0=No, 1=Yes
+        'fup_eyes_dry',  ## Binary: 0=No, 1=Yes
+        'fup_eyes_itchy',  ## Binary: 0=No, 1=Yes
         'fup_eyes_double',
         'fup_eyes_floater',
         'fup_eyes_sense',
-        'fup_eyes_watery',
-        'fup_eyes_pressure',
+        'fup_eyes_watery',  ## Binary: 0=No, 1=Yes
+        'fup_eyes_pressure', ## Binary: 0=No, 1=Yes
         'fup_eyes_pain',
         'fup_eyes_rubbing'
     ]
     
     # Female-specific symptoms (7 variables)
     female_vars = [
-        'fup_female_irregular',
-        'fup_female_pms',
-        'fup_female_blood_cloth',
+        'fup_female_irregular', ## 0=No, 1=Yes, 88=Not applicable
+        'fup_female_pms', ## 0=No, 1=Yes, 88=Not applicable
+        'fup_female_blood_cloth', ## 0=No, 1=Yes, 88=Not applicable
         'fup_female_vag_dry',
         'fup_female_vag_discharge',
-        'fup_female_climax',
+        'fup_female_climax', ## 0=No, 1=Yes, 88=Not applicable
         'fup_female_sex'
     ]
     
     # Male-specific symptoms (3 variables)
     male_vars = [
         'fup_male_erection',
-        'fup_male_ejaculation',
-        'fup_male_sex'
+        'fup_male_ejaculation', ## 0=No, 1=Yes, 88=Not applicable
+        'fup_male_sex' ## 0=No, 1=Yes, 88=Not applicable
     ]
     
-    # Other symptoms (16 variables)
+    # Other symptoms (18 variables)
     other_vars = [
-        'fup_oth_fever',
+        'fup_oth_fever', ## Binary: 0=No, 1=Yes
         'fup_oth_chills',
+        'fup_oth_sweating',
         'fup_oth_flushes',
         'fup_oth_ache_body',
+        'fup_oth_glands',
         'fup_oth_vertigo',
-        'fup_oth_swell',
-        'fup_oth_known_alergy',
-        'fup_oth_knew_alergy',
-        'fup_oth_urine_leakage',
-        'fup_oth_urine_difficult',
-        'fup_oth_urine_more',
-        'fup_oth_sweating',
+        'fup_oth_swell', ## Binary: 0=No, 1=Yes
+        'fup_oth_known_alergy', ## Binary: 0=No, 1=Yes
+        'fup_oth_knew_alergy', ## Binary: 0=No, 1=Yes
+        'fup_oth_urine_leakage', ## Binary: 0=No, 1=Yes
+        'fup_oth_urine_difficult', ## Binary: 0=No, 1=Yes
+        'fup_oth_urine_more', ## Binary: 0=No, 1=Yes
+        'fup_oth_thirst',
         'fup_oth_mouth_ulcer',
-        'fup_oth_dental',
+        'fup_oth_dental', ## Binary: 0=No, 1=Yes
         'fup_oth_dry_mouth',
         'fup_oth_headache'
     ]
@@ -224,22 +227,23 @@ def get_longcovid_symptom_variables():
         'fup_life_enjoy'
     ]
     
-    # Other symptom description (3 variables)
+    # Other symptom description (3 variables)- listed but not included in all_symptom_vars
     other_symptom_vars = [
         'fup_othsymp',  # Binary: Do you have other symptoms?
         'fup_othsyp_name',  # Text field
         'fup_othsymp_grade'  # 0-3 scale
     ]
     
-    # Combine all symptom variables
+
+    # The other-symptom gate, free text, and repeating-group grades are excluded
+    # because the grades cannot be aligned to one participant-level item.
     all_symptom_vars = (
         breathing_vars + pain_vars + circulation_vars + fatigue_vars +
         memory_vars + movement_vars + sleep_vars + ent_vars +
         stomach_vars + muscle_vars + mental_vars + skin_vars +
-        eye_vars + female_vars + male_vars + other_vars + life_vars +
-        other_symptom_vars
+        eye_vars + female_vars + male_vars + other_vars + life_vars
     )
-    
+
     # Completion status variables
     completion_vars = {
         'day90_complete': 'Follow up Day 90_complete',
@@ -250,6 +254,35 @@ def get_longcovid_symptom_variables():
     return {
         'who_binary': who_longcovid,
         'all_symptoms': all_symptom_vars,
+        'binary_symptoms': [
+            'fup_circulation_cold',
+            'fup_ent_hearing',
+            'fup_stomac_wgt_loss',
+            'fup_stomac_wgt_gain',
+            'fup_mental_person',
+            'fup_skin_red',
+            'fup_skin_rash',
+            'fup_skin_hives',
+            'fup_eyes_red',
+            'fup_eyes_dry',
+            'fup_eyes_itchy',
+            'fup_eyes_watery',
+            'fup_eyes_pressure',
+            'fup_female_irregular',
+            'fup_female_pms',
+            'fup_female_blood_cloth',
+            'fup_female_climax',
+            'fup_male_ejaculation',
+            'fup_male_sex',
+            'fup_oth_fever',
+            'fup_oth_swell',
+            'fup_oth_known_alergy',
+            'fup_oth_knew_alergy',
+            'fup_oth_urine_leakage',
+            'fup_oth_urine_difficult',
+            'fup_oth_urine_more',
+            'fup_oth_dental',
+        ],
         'breathing': breathing_vars,
         'pain': pain_vars,
         'circulation': circulation_vars,
@@ -272,10 +305,13 @@ def get_longcovid_symptom_variables():
 
 
 def calculate_pvalue_categorical(df, var, group_col='rand_group'):
-    """Calculate p-value for categorical/binary variables using chi-square test (log ratio test)."""
+    """Calculate a chi-square p-value for valid binary responses."""
     try:
         # Filter to only Paxlovid vs Usual Care
         df_filtered = df[df[group_col].isin(['Paxlovid', 'Usual Care'])].copy()
+        values = pd.to_numeric(df_filtered[var], errors='coerce')
+        df_filtered = df_filtered.loc[values.isin([0, 1])].copy()
+        df_filtered[var] = values.loc[df_filtered.index]
         
         contingency_table = pd.crosstab(df_filtered[var], df_filtered[group_col])
         if contingency_table.shape[0] > 1 and contingency_table.shape[1] > 1:
@@ -290,23 +326,19 @@ def calculate_pvalue_categorical(df, var, group_col='rand_group'):
 
 
 def calculate_pvalue_ordinal(df, var, group_col='rand_group'):
-    """Calculate p-value for ordinal variables (0-3 scale) using t-test.
-     Mann-Whitney U for ordinal data. the Kruskal-Wallis H test for three or more independent groups, and the Wilcoxon signed-rank test for paired or dependent data. 
-     Spearman's rank correlation or Kendall's tau are used to test for an association between two ordinal variables. 
-     These non-parametric tests are used instead of parametric tests like t-tests or ANOVA because they don't assume normal distribution or equal intervals.
-     Other Approaches:
-     Chi-Square Test: Can be used for ordinal data but ignores the order, treating categories as nominal (e.g., for independence in a contingency table).
-     Ordinal Regression Models: More advanced techniques like ordered logit/probit regression can model the effect of predictors on ordinal outcomes. 
-    """
+    """Calculate a two-sided Mann-Whitney U p-value for valid 0-3 responses."""
     try:
         # Filter to only Paxlovid vs Usual Care
         df_filtered = df[df[group_col].isin(['Paxlovid', 'Usual Care'])].copy()
+        values = pd.to_numeric(df_filtered[var], errors='coerce')
+        df_filtered = df_filtered.loc[values.between(0, 3)].copy()
+        df_filtered[var] = values.loc[df_filtered.index]
         
         paxlovid = df_filtered[df_filtered[group_col] == 'Paxlovid'][var].dropna()
         usual_care = df_filtered[df_filtered[group_col] == 'Usual Care'][var].dropna()
         
         if len(paxlovid) > 0 and len(usual_care) > 0:
-            U1, p_value = mannwhitneyu(paxlovid, usual_care)  # Mann-Whitney U test
+            _, p_value = mannwhitneyu(paxlovid, usual_care, alternative='two-sided')
             return p_value
         else:
             return np.nan
@@ -317,18 +349,20 @@ def calculate_pvalue_ordinal(df, var, group_col='rand_group'):
 
 def summarize_binary_variable(df, var, group_col='rand_group'):
     """
-    Summarize binary variable (Yes/No).
-    FIX 2: Only Paxlovid vs Usual Care, with p-value from log ratio test.
-    Returns counts, percentages, and p-value for each group.
+    Summarize valid Yes/No responses, excluding not-applicable code 88.
+    Returns counts, percentages, and a chi-square p-value for each group.
     """
-    # Filter to only Paxlovid vs Usual Care
+    # Only 0=No and 1=Yes contribute to the prevalence denominator.
     df_filtered = df[df[group_col].isin(['Paxlovid', 'Usual Care'])].copy()
+    values = pd.to_numeric(df_filtered[var], errors='coerce')
+    df_filtered = df_filtered.loc[values.isin([0, 1])].copy()
+    df_filtered[var] = values.loc[df_filtered.index]
     
     result = {}
     # Overall
-    total = df_filtered[var].notna().sum()
+    total = len(df_filtered)
     yes_count = (df_filtered[var] == 1).sum()
-    result['overall'] = f"{yes_count}/{total} ({100*yes_count/total if total > 0 else 0:.3f}%)"  # FIX 3: 3 decimal places
+    result['overall'] = f"{yes_count}/{total} ({100*yes_count/total if total > 0 else 0:.3f}%)"
     result['overall_n'] = total
     result['overall_yes'] = yes_count
     result['overall_pct'] = 100*yes_count/total if total > 0 else 0
@@ -336,41 +370,30 @@ def summarize_binary_variable(df, var, group_col='rand_group'):
     # By group (Paxlovid and Usual Care only)
     for group in ['Paxlovid', 'Usual Care']:
         group_df = df_filtered[df_filtered[group_col] == group]
-        group_total = group_df[var].notna().sum()
+        group_total = len(group_df)
         group_yes = (group_df[var] == 1).sum()
-        result[group] = f"{group_yes}/{group_total} ({100*group_yes/group_total if group_total > 0 else 0:.3f}%)"  # FIX 3: 3 decimal places
+        result[group] = f"{group_yes}/{group_total} ({100*group_yes/group_total if group_total > 0 else 0:.3f}%)"
         result[f'{group}_n'] = group_total
         result[f'{group}_yes'] = group_yes
         result[f'{group}_pct'] = 100*group_yes/group_total if group_total > 0 else 0
     
-    # P-value using chi-square (log ratio test)
-    result['p_value'] = calculate_pvalue_categorical(df, var, group_col)
+    result['p_value'] = calculate_pvalue_categorical(df_filtered, var, group_col)
     
     return result
 
 
 def summarize_ordinal_variable(df, var, group_col='rand_group'):
     """
-    Summarize ordinal variable (0-3 scale).
-    FIX 2: Only Paxlovid vs Usual Care, calculate mean, SD, and t-test p-value.
+    Summarize valid ordinal responses (0-3) by group.
     Returns counts for each level plus mean, SD, and p-value for each group.
     """
     # Filter to only Paxlovid vs Usual Care
     df_filtered = df[df[group_col].isin(['Paxlovid', 'Usual Care'])].copy()
+    values = pd.to_numeric(df_filtered[var], errors='coerce')
+    df_filtered = df_filtered.loc[values.between(0, 3)].copy()
+    df_filtered[var] = values.loc[df_filtered.index]
     
     result = {}
-    
-    # # Overall statistics
-    # total = df_filtered[var].notna().sum()
-    # overall_vals = df_filtered[var].dropna()
-    # result['overall_n'] = total
-    # result['overall_mean'] = overall_vals.mean() if len(overall_vals) > 0 else np.nan
-    # result['overall_sd'] = overall_vals.std() if len(overall_vals) > 0 else np.nan
-    
-    # # Distribution by level for overall
-    # for level in [0, 1, 2, 3]:
-    #     count = (df_filtered[var] == level).sum()
-    #     result[f'overall_level_{level}'] = f"{count}/{total} ({100*count/total if total > 0 else 0:.3f}%)"  # FIX 3: 3 decimal places
     
     # By group statistics
     for group in ['Paxlovid', 'Usual Care']:
@@ -385,37 +408,51 @@ def summarize_ordinal_variable(df, var, group_col='rand_group'):
         # Distribution by level
         for level in [0, 1, 2, 3]:
             count = (group_df[var] == level).sum()
-            result[f'{group}_level_{level}'] = f"{count}/{group_total} ({100*count/group_total if group_total > 0 else 0:.3f}%)"  # FIX 3: 3 decimal places
+            result[f'{group}_level_{level}'] = f"{count}/{group_total} ({100*count/group_total if group_total > 0 else 0:.3f}%)"
     
-    # P-value using t-test
     result['p_value'] = calculate_pvalue_ordinal(df, var, group_col)
     
     return result
 
 
 def summarize_group_symp_vars(df, group_vars, group_col='rand_group'):
-    try:
-        ## Filter to only Paxlovid vs Usual Care
-        df_filtered = df.loc[df[group_col].isin(['Paxlovid', 'Usual Care']), group_vars + [group_col]].copy()
-        ## change yes no questions to yes=3, no=0 if the column contains only 0 and 1 and 88
-        for col in group_vars:
-            unique_vals = df_filtered[col].dropna().unique()
-            if set(unique_vals).issubset({0, 1, 88}):
-                df_filtered[col] = df_filtered[col].replace({1: 3, 0: 0, 88: np.nan})
-        ## calculate the mean score for each participant across the group_vars
-        df_filtered['mean_score'] = df_filtered[group_vars].mean(axis=1, skipna=True)
-        
-        paxlovid_mean_score = df_filtered[df_filtered[group_col] == 'Paxlovid']['mean_score'].dropna()
-        usual_care_mean_score = df_filtered[df_filtered[group_col] == 'Usual Care']['mean_score'].dropna()
-        
-        if len(paxlovid_mean_score) > 0 and len(usual_care_mean_score) > 0:
-            U1, p_value = mannwhitneyu(paxlovid_mean_score, usual_care_mean_score)  # Mann-Whitney U test
-            return p_value, paxlovid_mean_score.mean(), usual_care_mean_score.mean(), paxlovid_mean_score.std(), usual_care_mean_score.std()
-        else:
-            return np.nan, np.nan, np.nan, np.nan, np.nan
-    except Exception as e:
-        print(f"Error calculating p-value for {group_vars}: {e}")
+    symptom_definitions = get_longcovid_symptom_variables()
+    available_vars = [var for var in group_vars if var in df.columns]
+    if not available_vars or group_col not in df.columns:
         return np.nan, np.nan, np.nan, np.nan, np.nan
+
+    df_filtered = df.loc[
+        df[group_col].isin(['Paxlovid', 'Usual Care']),
+        available_vars + [group_col]
+    ].copy()
+    binary_vars = set(symptom_definitions['binary_symptoms'])
+    for col in available_vars:
+        values = pd.to_numeric(df_filtered[col], errors='coerce')
+        if col in binary_vars:
+            df_filtered[col] = values.map({0: 0, 1: 3, 88: 0})
+        else:
+            df_filtered[col] = values.where(values.between(0, 3))
+
+    df_filtered['mean_score'] = df_filtered[available_vars].mean(axis=1, skipna=True)
+    paxlovid_mean_score = df_filtered.loc[
+        df_filtered[group_col] == 'Paxlovid', 'mean_score'
+    ].dropna()
+    usual_care_mean_score = df_filtered.loc[
+        df_filtered[group_col] == 'Usual Care', 'mean_score'
+    ].dropna()
+
+    if len(paxlovid_mean_score) > 0 and len(usual_care_mean_score) > 0:
+        _, p_value = mannwhitneyu(
+            paxlovid_mean_score, usual_care_mean_score, alternative='two-sided'
+        )
+        return (
+            p_value,
+            paxlovid_mean_score.mean(),
+            usual_care_mean_score.mean(),
+            paxlovid_mean_score.std(),
+            usual_care_mean_score.std()
+        )
+    return np.nan, np.nan, np.nan, np.nan, np.nan
     
     
 
@@ -429,7 +466,7 @@ def analyze_longcovid_outcomes(df_pax, pax_random):
     
     # Get variable definitions
     var_dict = get_longcovid_symptom_variables()
-    # FIX 2: Filter randomization data to exclude Antioxidant arm
+    # Restrict analyses to the Paxlovid and Usual Care arms.
     pax_random_filtered = pax_random[pax_random['rand_group'].isin(['Paxlovid', 'Usual Care'])].copy()
     
     # Extract Day 90 data
@@ -456,7 +493,6 @@ def analyze_longcovid_outcomes(df_pax, pax_random):
         how='inner'  # Inner join to exclude Antioxidant
     )
     
-    # FIX 2: Separate results for Day 90 and Week 36
     results_day90 = []
     results_week36 = []
     
@@ -520,9 +556,12 @@ def analyze_longcovid_outcomes(df_pax, pax_random):
     # 2. Individual symptom burden variables
     print("Analyzing symptom burden variables...")
     
-    symptom_categories = ['breathing', 'pain', 'circulation', 'fatigue', 'memory', 
-                         'movement', 'sleep', 'ent', 'stomach', 'muscle', 'mental', 
-                         'skin', 'eye', 'female', 'male', 'other', 'life']
+    symptom_categories = [
+        'breathing', 'pain', 'circulation', 'fatigue', 'memory', 'movement',
+        'sleep', 'ent', 'stomach', 'muscle', 'mental', 'skin', 'eye',
+        'female', 'male', 'other', 'life'
+    ]
+    binary_vars = set(var_dict['binary_symptoms'])
     
     for category in symptom_categories:
         
@@ -557,9 +596,8 @@ def analyze_longcovid_outcomes(df_pax, pax_random):
                 # Analyze Day 90
                 if symptom_var in df_day90.columns:
                     df_day90[symptom_var] = pd.to_numeric(df_day90[symptom_var], errors='coerce')
-                    unique_vals = df_day90[symptom_var].dropna().unique()
                     
-                    if set(unique_vals).issubset({0, 1, 88}):
+                    if symptom_var in binary_vars:
                         # Binary variable
                         result = summarize_binary_variable(df_day90, symptom_var)
                         result['variable'] = symptom_var
@@ -575,9 +613,8 @@ def analyze_longcovid_outcomes(df_pax, pax_random):
                 # Analyze Week 36
                 if symptom_var in df_week36.columns:
                     df_week36[symptom_var] = pd.to_numeric(df_week36[symptom_var], errors='coerce')
-                    unique_vals = df_week36[symptom_var].dropna().unique()
                     
-                    if set(unique_vals).issubset({0, 1}):
+                    if symptom_var in binary_vars:
                         # Binary variable
                         result = summarize_binary_variable(df_week36, symptom_var)
                         result['variable'] = symptom_var
